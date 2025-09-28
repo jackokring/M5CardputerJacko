@@ -89,15 +89,17 @@ bool Keyboard_Class::isKeyPressed(char c)
 
 void Keyboard_Class::updateKeysState()
 {
+    // printf("-------------------\n");
+
     _keys_state_buffer.reset();
     _key_pos_print_keys.clear();
     _key_pos_hid_keys.clear();
     _key_pos_modifier_keys.clear();
 
-    const auto& keys = keyList();
-
-    // 预分配容器大小以避免重复分配
+    const auto& keys       = keyList();
     const size_t key_count = keys.size();
+
+    // Pre-allocate containers to avoid re-allocation
     if (key_count > 0) {
         _key_pos_print_keys.reserve(key_count);
         _key_pos_hid_keys.reserve(key_count);
@@ -107,84 +109,101 @@ void Keyboard_Class::updateKeysState()
         _keys_state_buffer.word.reserve(key_count);
     }
 
+    // =================================================================
+    // PASS 1: Identify all active modifier keys first.
+    // This ensures their state is known before processing other keys.
+    // =================================================================
+    for (const auto& key_pos : keys) {
+        const uint8_t key_code = getKeyValue(key_pos).value_first;
+        switch (key_code) {
+            case KEY_FN:
+                _keys_state_buffer.fn = true;
+                break;
+            case KEY_OPT:
+                _keys_state_buffer.opt = true;
+                break;
+            case KEY_LEFT_CTRL:
+                _keys_state_buffer.ctrl = true;
+                _keys_state_buffer.modifiers |= (1 << (key_code - 0x80));
+                _key_pos_modifier_keys.push_back(key_pos);
+                _keys_state_buffer.modifier_keys.push_back(key_code);
+                break;
+            case KEY_LEFT_SHIFT:
+                _keys_state_buffer.shift = true;
+                _keys_state_buffer.modifiers |= (1 << (key_code - 0x80));
+                _key_pos_modifier_keys.push_back(key_pos);
+                _keys_state_buffer.modifier_keys.push_back(key_code);
+                break;
+            case KEY_LEFT_ALT:
+                _keys_state_buffer.alt = true;
+                _keys_state_buffer.modifiers |= (1 << (key_code - 0x80));
+                _key_pos_modifier_keys.push_back(key_pos);
+                _keys_state_buffer.modifier_keys.push_back(key_code);
+                break;
+                // Note: We only handle modifiers in this pass.
+        }
+    }
+
+    // =================================================================
+    // PASS 2: Process all non-modifier keys.
+    // Now the modifier state is correct, regardless of key order.
+    // =================================================================
     for (const auto& key_pos : keys) {
         const KeyValue_t key_value = getKeyValue(key_pos);
         const uint8_t key_code     = key_value.value_first;
 
+        // printf("%d\n", key_code);
+
+        // Skip modifier keys as they were handled in the first pass
         switch (key_code) {
-            // 修饰键处理
             case KEY_FN:
-                _keys_state_buffer.fn = true;
-                continue;
-
             case KEY_OPT:
-                _keys_state_buffer.opt = true;
-                continue;
-
             case KEY_LEFT_CTRL:
-                _keys_state_buffer.ctrl = true;
-                _key_pos_modifier_keys.push_back(key_pos);
-                _keys_state_buffer.modifier_keys.push_back(key_code);
-                _keys_state_buffer.modifiers |= (1 << (key_code - 0x80));
-                continue;
-
             case KEY_LEFT_SHIFT:
-                _keys_state_buffer.shift = true;
-                _key_pos_modifier_keys.push_back(key_pos);
-                _keys_state_buffer.modifier_keys.push_back(key_code);
-                _keys_state_buffer.modifiers |= (1 << (key_code - 0x80));
-                continue;
-
             case KEY_LEFT_ALT:
-                _keys_state_buffer.alt = true;
-                _key_pos_modifier_keys.push_back(key_pos);
-                _keys_state_buffer.modifier_keys.push_back(key_code);
-                _keys_state_buffer.modifiers |= (1 << (key_code - 0x80));
-                continue;
+                continue;  // Already processed
+        }
 
-            // 功能键处理
+        // Handle other special keys
+        switch (key_code) {
             case KEY_TAB:
                 _keys_state_buffer.tab = true;
                 _key_pos_hid_keys.push_back(key_pos);
                 _keys_state_buffer.hid_keys.push_back(key_code);
-                continue;
-
+                continue;  // Skip further processing for this key
             case KEY_BACKSPACE:
                 _keys_state_buffer.del = true;
                 _key_pos_hid_keys.push_back(key_pos);
                 _keys_state_buffer.hid_keys.push_back(key_code);
-                continue;
-
+                continue;  // Skip further processing for this key
             case KEY_ENTER:
                 _keys_state_buffer.enter = true;
                 _key_pos_hid_keys.push_back(key_pos);
                 _keys_state_buffer.hid_keys.push_back(key_code);
-                continue;
-
-            case ' ':
-                _keys_state_buffer.space = true;
-                break;  // 空格键需要继续后续处理
-
-            default:
-                break;  // 普通按键继续后续处理
+                continue;  // Skip further processing for this key
         }
 
-        // 处理普通按键和空格键
+        // Handle printable keys (including space)
+        if (key_code == ' ') {
+            _keys_state_buffer.space = true;
+        }
+
         _key_pos_hid_keys.push_back(key_pos);
         _key_pos_print_keys.push_back(key_pos);
 
-        // 直接处理HID键值转换
-        if (key_code != ' ') {  // 空格已在上面处理
-            const uint8_t hid_key = _kb_asciimap[key_code];
-            if (hid_key) {
-                _keys_state_buffer.hid_keys.push_back(hid_key);
-            }
+        // Add HID key to the list
+        const uint8_t hid_key = _kb_asciimap[key_code];
+        if (hid_key) {
+            _keys_state_buffer.hid_keys.push_back(hid_key);
         }
 
-        // 直接处理字符输出
+        // Add character to the word buffer, now with the correct modifier state
+        // printf("%d %d %d\n", _keys_state_buffer.ctrl, _keys_state_buffer.shift, _is_caps_locked);
         if (_keys_state_buffer.ctrl || _keys_state_buffer.shift || _is_caps_locked) {
+            // printf("push_back %c\n", key_value.value_second);
             _keys_state_buffer.word.push_back(key_value.value_second);
         } else {
+            // printf("push_back %c\n", key_value.value_first);
             _keys_state_buffer.word.push_back(key_value.value_first);
         }
     }
